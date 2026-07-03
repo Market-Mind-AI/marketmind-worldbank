@@ -1,0 +1,45 @@
+class WorldBankBaseException(Exception):
+    def __init__(self, message: str, status_code: int = 500):
+        self.message = message
+        self.status_code = status_code
+        super().__init__(self.message)
+
+
+class WorldBankClientError(WorldBankBaseException):
+    def __init__(self, message: str = "World Bank API client error"):
+        super().__init__(message=message, status_code=502)
+
+
+class WorldBankTimeoutError(WorldBankBaseException):
+    def __init__(self, message: str = "World Bank API request timed out"):
+        super().__init__(message=message, status_code=504)
+
+
+class WorldBankRateLimitError(WorldBankBaseException):
+    def __init__(self, message: str = "World Bank API rate limit exceeded"):
+        super().__init__(message=message, status_code=429)
+
+
+class WorldBankEmptyResponseError(WorldBankBaseException):
+    def __init__(self, message: str = "World Bank API returned empty response"):
+        super().__init__(message=message, status_code=404)
+
+
+class WorldBankParsingError(WorldBankBaseException):
+    def __init__(self, message: str = "Failed to parse World Bank API response"):
+        super().__init__(message=message, status_code=502)
+
+
+class ValidationError(WorldBankBaseException):
+    def __init__(self, message: str = "Validation error"):
+        super().__init__(message=message, status_code=422)
+
+
+class IngestionError(WorldBankBaseException):
+    def __init__(self, message: str = "Ingestion error"):
+        super().__init__(message=message, status_code=500)
+
+
+class DatabaseError(WorldBankBaseException):
+    def __init__(self, message: str = "Database error"):
+        super().__init__(message=message, status_code=500)
