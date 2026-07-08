@@ -100,6 +100,51 @@ SEED_INDICATORS = [
         "expected_unit": "per_100_people",
         "marketmind_dimension": "digital_readiness",
     },
+    # Macro Demand Structure (added 2026-07-08, marketmind-core GDP=C+I+G+NX
+    # identity — see that repo's memory marketmind_mos_engine). All 4
+    # confirmed live against the real World Bank API before being added.
+    {
+        "indicator_code": "NE.CON.PRVT.ZS",
+        "indicator_name": "Households and NPISHs final consumption expenditure (% of GDP)",
+        "description": "Private consumption share of GDP — a market's household spending intensity.",
+        "category": "consumer_spending",
+        "expected_unit": "percentage",
+        "marketmind_dimension": "macro_demand_structure",
+    },
+    {
+        "indicator_code": "NE.CON.GOVT.ZS",
+        "indicator_name": "General government final consumption expenditure (% of GDP)",
+        "description": "Government spending share of GDP — context only in marketmind-core (no defensible "
+        "mayor/menor direction for market opportunity, confirmed against live data).",
+        "category": "government_expenditure",
+        "expected_unit": "percentage",
+        "marketmind_dimension": "macro_demand_structure",
+    },
+    {
+        "indicator_code": "NE.GDI.FTOT.ZS",
+        "indicator_name": "Gross fixed capital formation (% of GDP)",
+        "description": "Investment share of GDP — proxy for infrastructure/productive investment.",
+        "category": "investment",
+        "expected_unit": "percentage",
+        "marketmind_dimension": "macro_demand_structure",
+    },
+    {
+        "indicator_code": "NE.RSB.GNFS.ZS",
+        "indicator_name": "External balance on goods and services (% of GDP)",
+        "description": "Net exports share of GDP (can be negative — a trade deficit).",
+        "category": "net_exports",
+        "expected_unit": "percentage",
+        "marketmind_dimension": "macro_demand_structure",
+    },
+    {
+        "indicator_code": "NE.TRD.GNFS.ZS",
+        "indicator_name": "Trade (% of GDP)",
+        "description": "Exports plus imports of goods and services as a share of GDP — trade openness/"
+        "global integration, complementary to net exports (not a zero-sum share with C/I/G).",
+        "category": "trade_openness",
+        "expected_unit": "percentage",
+        "marketmind_dimension": "macro_demand_structure",
+    },
 ]
 
 

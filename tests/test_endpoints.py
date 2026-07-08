@@ -178,6 +178,8 @@ class TestCatalogSeedEndpoint:
             assert response.status_code == 200
             data = response.json()
             assert data["metadata"]["status"] == "success"
-            assert len(data["data"]["indicators"]) == 7
+            # 7 original + 5 Macro Demand Structure indicators added 2026-07-08
+            # (marketmind-core GDP=C+I+G+NX identity) — see SEED_INDICATORS.
+            assert len(data["data"]["indicators"]) == 12
         finally:
             app.dependency_overrides.clear()
