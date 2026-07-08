@@ -178,8 +178,11 @@ class TestCatalogSeedEndpoint:
             assert response.status_code == 200
             data = response.json()
             assert data["metadata"]["status"] == "success"
-            # 7 original + 5 Macro Demand Structure indicators added 2026-07-08
-            # (marketmind-core GDP=C+I+G+NX identity) — see SEED_INDICATORS.
-            assert len(data["data"]["indicators"]) == 12
+            # 7 original + FP.CPI.TOTL.ZG (was live in the catalog but never
+            # in this code-level list until 2026-07-08 — restored so a
+            # fresh database's seed matches what was actually running) + 5
+            # Macro Demand Structure indicators (marketmind-core GDP=C+I+G+NX
+            # identity) — see SEED_INDICATORS.
+            assert len(data["data"]["indicators"]) == 13
         finally:
             app.dependency_overrides.clear()

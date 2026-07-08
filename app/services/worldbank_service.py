@@ -93,6 +93,14 @@ SEED_INDICATORS = [
         "marketmind_dimension": "digital_readiness",
     },
     {
+        "indicator_code": "FP.CPI.TOTL.ZG",
+        "indicator_name": "Inflation, consumer prices (annual %)",
+        "description": "Inflation as measured by the consumer price index.",
+        "category": "inflation",
+        "expected_unit": "percentage",
+        "marketmind_dimension": "macroeconomic_stability",
+    },
+    {
         "indicator_code": "IT.NET.BBND.P2",
         "indicator_name": "Fixed broadband subscriptions (per 100 people)",
         "description": "Fixed broadband subscriptions per 100 people.",
