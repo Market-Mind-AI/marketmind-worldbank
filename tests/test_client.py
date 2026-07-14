@@ -5,7 +5,12 @@ import httpx
 import pytest
 
 from app.clients.worldbank_client import WorldBankClient
-from app.core.exceptions import WorldBankEmptyResponseError, WorldBankParsingError, WorldBankTimeoutError
+from app.core.exceptions import (
+    WorldBankEmptyResponseError,
+    WorldBankParsingError,
+    WorldBankTimeoutError,
+    WorldBankTransientError,
+)
 
 
 def _make_mock_response(json_data: Any, url: str = "https://api.worldbank.org/v2") -> MagicMock:
@@ -113,6 +118,21 @@ class TestWorldBankClient:
             mock_client_cls.return_value = mock_client
 
             with pytest.raises(WorldBankTimeoutError):
+                await client.get_raw("https://api.worldbank.org/v2/country", {})
+
+    @pytest.mark.asyncio
+    async def test_transient_5xx_raises_retryable_error(self, client: WorldBankClient) -> None:
+        # The World Bank public API returns intermittent 502/503/504; those must
+        # map to WorldBankTransientError so the RETRY_DECORATOR retries them
+        # (a single blip must not permanently drop an indicator).
+        mock_response = MagicMock()
+        mock_response.status_code = 502
+        mock_response.url = "https://api.worldbank.org/v2/country"
+
+        with patch("app.clients.worldbank_client.httpx.AsyncClient") as mock_client_cls:
+            mock_client_cls.return_value = _make_mock_client(mock_response)
+
+            with pytest.raises(WorldBankTransientError):
                 await client.get_raw("https://api.worldbank.org/v2/country", {})
 
     @pytest.mark.asyncio

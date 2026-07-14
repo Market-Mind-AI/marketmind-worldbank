@@ -20,6 +20,16 @@ class WorldBankRateLimitError(WorldBankBaseException):
         super().__init__(message=message, status_code=429)
 
 
+class WorldBankTransientError(WorldBankBaseException):
+    """A transient upstream failure (HTTP 5xx) worth retrying — the World Bank
+    public API returns intermittent 502/503/504 under load. Distinct from
+    WorldBankClientError (non-retryable, e.g. 4xx) so the retry decorator can
+    back off and try again instead of failing the whole collection on a blip."""
+
+    def __init__(self, message: str = "World Bank API transient server error"):
+        super().__init__(message=message, status_code=503)
+
+
 class WorldBankEmptyResponseError(WorldBankBaseException):
     def __init__(self, message: str = "World Bank API returned empty response"):
         super().__init__(message=message, status_code=404)

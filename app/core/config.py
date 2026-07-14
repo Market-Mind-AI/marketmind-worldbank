@@ -17,7 +17,11 @@ class Settings(BaseSettings):
     default_format: str = "json"
     default_per_page: int = 1000
     default_timeout: int = 30
-    default_retries: int = 3
+    # 5 attempts (was 3): the World Bank public API returns intermittent
+    # 5xx/timeouts under load, and one dropped indicator aborts a whole
+    # downstream MarketMind analysis (completeness gate) — more retries with
+    # exponential backoff ride out transient blips.
+    default_retries: int = 5
     default_backoff: int = 2
 
     log_level: str = "INFO"

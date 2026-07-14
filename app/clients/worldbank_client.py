@@ -10,14 +10,20 @@ from app.core.exceptions import (
     WorldBankParsingError,
     WorldBankRateLimitError,
     WorldBankTimeoutError,
+    WorldBankTransientError,
 )
 from app.core.logging import logger
 from app.utils.pagination import get_total_pages, parse_worldbank_response
 
+# Retry transient upstream failures — timeouts, 429, and 5xx (the World Bank
+# public API returns intermittent 502/503/504 under load; without retry a
+# single blip permanently drops an indicator and, downstream, aborts a whole
+# MarketMind analysis via its completeness gate). Non-transient errors (4xx,
+# parse) are NOT retried.
 RETRY_DECORATOR = retry(
     stop=stop_after_attempt(settings.default_retries),
     wait=wait_exponential(multiplier=settings.default_backoff, min=2, max=60),
-    retry=retry_if_exception_type((WorldBankTimeoutError, WorldBankRateLimitError)),
+    retry=retry_if_exception_type((WorldBankTimeoutError, WorldBankRateLimitError, WorldBankTransientError)),
     reraise=True,
 )
 
@@ -46,6 +52,8 @@ class WorldBankClient:
 
                 if response.status_code == 429:
                     raise WorldBankRateLimitError(f"Rate limited: {response.status_code}")
+                if response.status_code >= 500:
+                    raise WorldBankTransientError(f"Server error {response.status_code}: {url}")
 
                 response.raise_for_status()
 
@@ -62,7 +70,7 @@ class WorldBankClient:
             if e.response.status_code == 429:
                 raise WorldBankRateLimitError(f"Rate limited: {e.response.status_code}") from e
             raise WorldBankClientError(f"HTTP error {e.response.status_code}: {url}") from e
-        except (WorldBankTimeoutError, WorldBankRateLimitError, WorldBankParsingError):
+        except (WorldBankTimeoutError, WorldBankRateLimitError, WorldBankTransientError, WorldBankParsingError):
             raise
         except httpx.HTTPError as e:
             raise WorldBankClientError(f"HTTP error calling World Bank API: {e}") from e
