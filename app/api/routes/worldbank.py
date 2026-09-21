@@ -16,6 +16,7 @@ from app.schemas.requests import (
     IndicatorCollectRequest,
     IndicatorMetadataRequest,
     ObservationsRequest,
+    RefreshStaleRequest,
 )
 from app.schemas.responses import (
     CatalogCreateResponse,
@@ -27,6 +28,7 @@ from app.schemas.responses import (
     IndicatorMetadataResponse,
     IngestionRunResponse,
     ObservationsResponse,
+    RefreshStaleResponse,
     SeriesResponse,
     WorldBankRequestResponse,
 )
@@ -132,6 +134,38 @@ async def create_catalog(
 ) -> CatalogCreateResponse:
     try:
         return await service.create_catalog(request)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _handle_exception(e) from e
+
+
+@router.post(
+    "/maintenance/refresh-stale",
+    response_model=RefreshStaleResponse,
+    summary="Collect again whatever has not been looked at in a while",
+    description=(
+        "The scheduled half of keeping data current. The other half is the "
+        "on-demand collection: something decides a country is needed now and "
+        "asks for it. Between the two, what this service holds stays fresh "
+        "without anyone tracking it from outside.\n\n"
+        "Each stale country is replayed from its last SUCCESSFUL collection "
+        "request, with the year window moved to now. Replaying rather than "
+        "composing a new request means this service needs no knowledge it does "
+        "not already have -- whatever a caller once set up keeps working.\n\n"
+        "A country never collected is skipped, not invented: it has no request "
+        "to replay, and it arrives through the on-demand path the first time.\n\n"
+        "Bounded by `limit`, because a first run against a long-idle database "
+        "finds everything stale at once and would collect all of it in one "
+        "pass. One country failing does not end the pass."
+    ),
+)
+async def refresh_stale(
+    request: RefreshStaleRequest | None = None,
+    service: WorldBankService = Depends(get_worldbank_service),
+) -> RefreshStaleResponse:
+    try:
+        return await service.refresh_stale(request or RefreshStaleRequest())
     except HTTPException:
         raise
     except Exception as e:

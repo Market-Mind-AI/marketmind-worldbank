@@ -21,6 +21,7 @@ from app.schemas.requests import (
     IndicatorCollectRequest,
     IndicatorMetadataRequest,
     ObservationsRequest,
+    RefreshStaleRequest,
 )
 from app.schemas.responses import (
     CatalogCreateResponse,
@@ -43,6 +44,9 @@ from app.schemas.responses import (
     ObservationItem,
     ObservationsData,
     ObservationsResponse,
+    RefreshedCountry,
+    RefreshStaleData,
+    RefreshStaleResponse,
     SeriesData,
     SeriesPoint,
     SeriesResponse,
@@ -794,5 +798,79 @@ class WorldBankService:
                 points=[
                     SeriesPoint(year=r.year, value=r.value, unit=r.unit, obs_status=r.obs_status) for r in rows
                 ],
+            )
+        )
+
+    async def refresh_stale(self, request: RefreshStaleRequest) -> RefreshStaleResponse:
+        """Collect again whatever has not been looked at in a while.
+
+        This is the half of freshness that nobody has to ask for. The other half
+        is the on-demand collection: something decides a country is needed now
+        and asks. Between the two, data this service already holds stays current
+        without anyone tracking it from outside, which is the whole point --
+        a second record of what was collected, kept elsewhere, drifts from the
+        tables, and the tables are the ones that can be wrong in silence.
+
+        Bounded on purpose. A first run against a long-idle database would
+        otherwise find every country stale at once and try to collect all of
+        them in one pass, against an upstream API with its own patience.
+
+        Each country is REPLAYED from its last successful request, with the
+        window moved to now. Composing a fresh request instead would mean
+        knowing things this service has no business keeping -- which upstream
+        identifier a country has, which indicators it was set up with.
+        """
+        freshness = await self.get_freshness(stale_after_days=request.stale_after_days, only_stale=True)
+
+        stale_countries: list[str] = []
+        for item in freshness.data.items:
+            if item.country not in stale_countries:
+                stale_countries.append(item.country)
+
+        payloads = await self._ingestion_repo.last_successful_payload_by_country()
+        end_year = utc_now().year
+        start_year = end_year - request.years_back + 1
+
+        outcomes: list[RefreshedCountry] = []
+        refreshed = failed = skipped = 0
+
+        for country in stale_countries[: request.limit]:
+            payload = payloads.get(country)
+            if payload is None:
+                skipped += 1
+                outcomes.append(
+                    RefreshedCountry(
+                        country=country,
+                        outcome="skipped",
+                        detail="no successful collection to replay; collect it once on demand first",
+                    )
+                )
+                continue
+
+            try:
+                await self.collect_indicators(
+                    IndicatorCollectRequest(
+                        country=payload.get("country", country),
+                        start_year=start_year,
+                        end_year=end_year,
+                        indicator_codes=payload.get("indicator_codes"),
+                    )
+                )
+                refreshed += 1
+                outcomes.append(RefreshedCountry(country=country, outcome="refreshed"))
+            except Exception as exc:  # noqa: BLE001 - one country failing must not end the pass
+                failed += 1
+                logger.warning(f"Scheduled refresh failed for country={country}: {exc}")
+                outcomes.append(RefreshedCountry(country=country, outcome="failed", detail=str(exc)))
+
+        return RefreshStaleResponse(
+            data=RefreshStaleData(
+                stale_after_days=request.stale_after_days,
+                stale_countries=len(stale_countries),
+                attempted=len(outcomes),
+                refreshed=refreshed,
+                failed=failed,
+                skipped=skipped,
+                countries=outcomes,
             )
         )
