@@ -193,3 +193,20 @@ class FreshnessData(BaseModel):
 
 class FreshnessResponse(BaseModel):
     data: FreshnessData
+
+
+class SeriesPoint(BaseModel):
+    year: int
+    value: Decimal
+    unit: str | None = None
+    obs_status: str | None = None
+
+
+class SeriesData(BaseModel):
+    country_iso2: str
+    indicator_code: str
+    points: list[SeriesPoint]
+
+
+class SeriesResponse(BaseModel):
+    data: SeriesData

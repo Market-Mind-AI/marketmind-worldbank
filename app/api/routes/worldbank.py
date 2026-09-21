@@ -27,6 +27,7 @@ from app.schemas.responses import (
     IndicatorMetadataResponse,
     IngestionRunResponse,
     ObservationsResponse,
+    SeriesResponse,
     WorldBankRequestResponse,
 )
 from app.services.worldbank_service import WorldBankService
@@ -131,6 +132,35 @@ async def create_catalog(
 ) -> CatalogCreateResponse:
     try:
         return await service.create_catalog(request)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _handle_exception(e) from e
+
+
+@router.get(
+    "/observations/series",
+    response_model=SeriesResponse,
+    summary="Read one indicator's stored values for one country",
+    description=(
+        "Returns the values this service has collected, newest year first, with "
+        "nulls dropped. Filtered by ISO2 country code, which is the one code a "
+        "caller can supply for every country without keeping a mapping table of "
+        "its own.\n\n"
+        "Rows come back, never a computed figure: an average, a latest value or "
+        "a logarithm is method, it is versioned, and it belongs to whoever owns "
+        "the method rather than to this service.\n\n"
+        "Use `limit` to read only the most recent N years."
+    ),
+)
+async def get_series(
+    country_iso2: str = Query(..., min_length=2, max_length=2, description="ISO2 country code, e.g. ES"),
+    indicator_code: str = Query(..., description="World Bank indicator code, e.g. NY.GDP.PCAP.CD"),
+    limit: int | None = Query(None, ge=1, le=1000, description="Most recent N years only. Omit for the full series."),
+    service: WorldBankService = Depends(get_worldbank_service),
+) -> SeriesResponse:
+    try:
+        return await service.get_series(country_iso2=country_iso2, indicator_code=indicator_code, limit=limit)
     except HTTPException:
         raise
     except Exception as e:

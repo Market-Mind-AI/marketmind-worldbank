@@ -43,6 +43,9 @@ from app.schemas.responses import (
     ObservationItem,
     ObservationsData,
     ObservationsResponse,
+    SeriesData,
+    SeriesPoint,
+    SeriesResponse,
     RequestInfo,
 )
 from app.utils.normalization import normalize_countries, normalize_country_observations, normalize_indicator_metadata
@@ -763,3 +766,33 @@ class WorldBankService:
 
     async def get_request(self, request_id: uuid.UUID) -> Any:
         return await self._request_repo.get_by_id(request_id)
+
+    async def get_series(
+        self, *, country_iso2: str, indicator_code: str, limit: int | None = None
+    ) -> SeriesResponse:
+        """One indicator's stored values for one country, newest year first.
+
+        This is how a caller reads what was collected without opening this
+        service's database. Reading another service's tables directly couples
+        the reader to a schema it does not own: a column rename here breaks a
+        calculation there, silently and at the worst moment.
+
+        Values come back as rows, never as an average or a latest-value. The
+        arithmetic on top (mean of the last three years, natural log of the
+        latest, truncation to a range) is method, it is versioned, and it
+        belongs to whoever owns the method -- not here.
+        """
+        rows = await self._observation_repo.series(
+            country_iso2=country_iso2.strip().upper(),
+            indicator_code=indicator_code.strip(),
+            limit=limit,
+        )
+        return SeriesResponse(
+            data=SeriesData(
+                country_iso2=country_iso2.strip().upper(),
+                indicator_code=indicator_code.strip(),
+                points=[
+                    SeriesPoint(year=r.year, value=r.value, unit=r.unit, obs_status=r.obs_status) for r in rows
+                ],
+            )
+        )

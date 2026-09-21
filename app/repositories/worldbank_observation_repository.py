@@ -2,6 +2,7 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.worldbank_observation import WorldBankObservation
@@ -46,3 +47,29 @@ class WorldBankObservationRepository:
         self._session.add_all(entities)
         await self._session.flush()
         return entities
+
+    async def series(
+        self, *, country_iso2: str, indicator_code: str, limit: int | None = None
+    ) -> list[WorldBankObservation]:
+        """The indicator's values for a country, newest year first, nulls dropped.
+
+        Filtered by country_iso2 rather than the World Bank's own `country`
+        column: ISO2 is the one code every caller can supply for every country
+        without a lookup table of its own.
+
+        Rows are returned, not a computed figure. Whoever asks owns the
+        arithmetic -- averaging the last three years, taking the latest, taking
+        a logarithm -- and that arithmetic is versioned method, not something
+        this service should be quietly deciding.
+        """
+        stmt = (
+            select(WorldBankObservation)
+            .where(WorldBankObservation.country_iso2 == country_iso2)
+            .where(WorldBankObservation.indicator_code == indicator_code)
+            .where(WorldBankObservation.value.is_not(None))
+            .order_by(WorldBankObservation.year.desc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
