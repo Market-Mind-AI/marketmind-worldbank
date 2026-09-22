@@ -181,3 +181,30 @@ def test_the_freshness_repository_imports_cleanly() -> None:
     import app.repositories.freshness_repository as modulo
 
     assert modulo.FreshnessRepository is not None
+
+
+async def test_a_check_that_comes_back_with_a_timezone_is_still_comparable(
+    mock_session: AsyncMock,
+) -> None:
+    """`worldbank_requests.created_at` é `timestamp with time zone`, então o
+    banco devolve um datetime COM fuso, e o `utc_now()` deste serviço é sem.
+    Comparar os dois é TypeError.
+
+    Ficou latente por muito tempo: a consulta de frescor exigia
+    `indicator_code` preenchido, nenhuma linha atendia, e o laço que compara
+    nunca rodava. No dia em que a consulta passou a devolver linhas — a
+    correção anterior, nesta mesma suíte — o /freshness inteiro começou a
+    responder 500. Um defeito escondido atrás de outro.
+    """
+    from datetime import UTC
+
+    from app.services.worldbank_service import WorldBankService
+
+    ontem_com_fuso = (utc_now() - timedelta(days=1)).replace(tzinfo=UTC)
+    service = WorldBankService(mock_session)
+    service._freshness_repo.last_checks = AsyncMock(return_value={("BRA", _GDP): ontem_com_fuso})
+    service._freshness_repo.observation_facts = AsyncMock(return_value={})
+
+    resposta = await service.get_freshness(countries=["BRA"], indicators=[_GDP])
+
+    assert [(i.country, i.stale) for i in resposta.data.items] == [("BRA", False)]
