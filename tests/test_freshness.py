@@ -169,3 +169,15 @@ async def test_a_single_indicator_request_still_counts(mock_session: AsyncMock) 
     )
 
     assert await repo.last_checks(countries=["BRA"]) == {("BRA", "FP.CPI.TOTL.ZG"): agora}
+
+
+def test_the_freshness_repository_imports_cleanly() -> None:
+    """Trivial, and it would have caught a real 500 in production.
+
+    Every test here mocks `_freshness_repo`, so the repository's own module was
+    never imported by the suite — a missing import inside it passed ninety-seven
+    tests and answered `name 'func' is not defined` to the first real request.
+    """
+    import app.repositories.freshness_repository as modulo
+
+    assert modulo.FreshnessRepository is not None
