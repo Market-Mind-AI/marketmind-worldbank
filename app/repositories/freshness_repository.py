@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.worldbank_observation import WorldBankObservation
@@ -34,23 +34,32 @@ class FreshnessRepository:
     async def last_checks(
         self, *, countries: list[str] | None = None, indicators: list[str] | None = None
     ) -> dict[Pair, datetime]:
-        stmt = (
-            select(
-                WorldBankRequest.country,
-                WorldBankRequest.indicator_code,
-                func.max(WorldBankRequest.created_at),
-            )
-            .where(WorldBankRequest.country.is_not(None))
-            .where(WorldBankRequest.indicator_code.is_not(None))
-            .group_by(WorldBankRequest.country, WorldBankRequest.indicator_code)
-        )
+        # Duas formas de linha, porque há duas formas de requisição. Uma chamada
+        # de metadados nomeia UM indicador e preenche `indicator_code`; a coleta
+        # de séries busca VÁRIOS de uma vez e deixa a coluna nula, guardando a
+        # lista em `query_params`. Exigir a coluna preenchida descartava a
+        # segunda forma — que é a única que as coletas diárias produzem — e todo
+        # par voltava como "nunca verificado", recoletado todas as noites.
+        stmt = select(
+            WorldBankRequest.country,
+            WorldBankRequest.indicator_code,
+            WorldBankRequest.query_params,
+            WorldBankRequest.created_at,
+        ).where(WorldBankRequest.country.is_not(None))
         if countries:
             stmt = stmt.where(WorldBankRequest.country.in_(countries))
-        if indicators:
-            stmt = stmt.where(WorldBankRequest.indicator_code.in_(indicators))
 
-        result = await self._session.execute(stmt)
-        return {(row[0], row[1]): row[2] for row in result.all()}
+        procurados = set(indicators or [])
+        ultimos: dict[Pair, datetime] = {}
+        for country, indicator_code, params, created_at in (await self._session.execute(stmt)).all():
+            codigos = [indicator_code] if indicator_code else list((params or {}).get("indicator_codes") or [])
+            for code in codigos:
+                if procurados and code not in procurados:
+                    continue
+                chave = (country, code)
+                if chave not in ultimos or created_at > ultimos[chave]:
+                    ultimos[chave] = created_at
+        return ultimos
 
     async def observation_facts(
         self, *, countries: list[str] | None = None, indicators: list[str] | None = None

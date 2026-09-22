@@ -647,6 +647,12 @@ class WorldBankService:
             country=request.country,
             start_year=request.start_year,
             end_year=request.end_year,
+            # QUAIS indicadores esta chamada cobriu. Uma requisição ao World Bank
+            # busca vários de uma vez, então `indicator_code` fica nulo — e o
+            # cálculo de frescor, que casa por (país, indicador), não enxergava
+            # NENHUMA destas linhas. O efeito: todo indicador de todo país ficava
+            # eternamente "nunca verificado", e era recoletado toda noite.
+            query_params={"indicator_codes": list(request.indicator_codes or [])},
         )
 
         try:

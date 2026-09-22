@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -131,3 +132,40 @@ async def test_the_threshold_is_configurable(mock_session: AsyncMock) -> None:
     assert fresh.data.items[0].stale is False
     assert stale.data.items[0].stale is True
     assert stale.data.stale_after_days == 7
+
+
+async def test_a_batch_collection_counts_as_checking_every_indicator_it_covered(
+    mock_session: AsyncMock,
+) -> None:
+    """Uma coleta de séries busca VÁRIOS indicadores numa chamada e deixa
+    `indicator_code` nulo, guardando a lista em `query_params`. Exigir a coluna
+    preenchida descartava exatamente essas linhas — que são as únicas que as
+    coletas diárias produzem — e todo par voltava como "nunca verificado".
+
+    O efeito medido em produção: doze indicadores do Brasil com sessenta
+    observações cada, todos com last_checked_at nulo, recoletados toda noite.
+    """
+    from app.repositories.freshness_repository import FreshnessRepository
+
+    agora = utc_now()
+    linhas = [("BRA", None, {"indicator_codes": ["NY.GDP.PCAP.CD", "SP.POP.TOTL"]}, agora)]
+
+    repo = FreshnessRepository(mock_session)
+    mock_session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: linhas))
+
+    checks = await repo.last_checks(countries=["BRA"])
+
+    assert checks == {("BRA", "NY.GDP.PCAP.CD"): agora, ("BRA", "SP.POP.TOTL"): agora}
+
+
+async def test_a_single_indicator_request_still_counts(mock_session: AsyncMock) -> None:
+    """A outra forma de linha, das chamadas de metadados, continua valendo."""
+    from app.repositories.freshness_repository import FreshnessRepository
+
+    agora = utc_now()
+    repo = FreshnessRepository(mock_session)
+    mock_session.execute = AsyncMock(
+        return_value=SimpleNamespace(all=lambda: [("BRA", "FP.CPI.TOTL.ZG", None, agora)])
+    )
+
+    assert await repo.last_checks(countries=["BRA"]) == {("BRA", "FP.CPI.TOTL.ZG"): agora}
