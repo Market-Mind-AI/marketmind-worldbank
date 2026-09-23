@@ -91,8 +91,8 @@ Open [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ### 5. Access pgAdmin
 
-pgAdmin was consolidated into `marketmind-core` (single instance pointing at
-all 5 services' databases). See `marketmind-core/README.md`.
+pgAdmin was consolidated into `marketmind-scoring` (single instance pointing at
+all 5 services' databases). See `marketmind-scoring/README.md`.
 
 The server connection is pre-configured.
 
