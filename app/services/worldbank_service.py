@@ -53,7 +53,7 @@ from app.schemas.responses import (
     RequestInfo,
 )
 from app.utils.normalization import normalize_countries, normalize_country_observations, normalize_indicator_metadata
-from app.utils.time import elapsed_ms, utc_now
+from app.utils.time import as_naive_utc, elapsed_ms, utc_now
 
 SEED_INDICATORS = [
     {
@@ -590,7 +590,7 @@ class WorldBankService:
 
         items: list[FreshnessItem] = []
         for country, indicator in pairs:
-            last_checked_at = checks.get((country, indicator))
+            last_checked_at = as_naive_utc(checks.get((country, indicator)))
             facts = observed.get((country, indicator))
             stale = last_checked_at is None or last_checked_at < cutoff
             if only_stale and not stale:

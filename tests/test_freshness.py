@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -131,3 +131,25 @@ async def test_the_threshold_is_configurable(mock_session: AsyncMock) -> None:
     assert fresh.data.items[0].stale is False
     assert stale.data.items[0].stale is True
     assert stale.data.stale_after_days == 7
+
+
+async def test_a_check_read_back_as_aware_is_compared_not_crashed(mock_session: AsyncMock) -> None:
+    # worldbank_requests.created_at is `timestamp with time zone`, so the driver
+    # hands the value back aware while utc_now() is naive. Comparing the two
+    # raises TypeError — the same defect that made the OECD service answer 500
+    # for every country it had already fetched.
+    aware = datetime.now(UTC) - timedelta(days=1)
+    service = _service(mock_session, checks={("MEX", _GDP): aware})
+
+    response = await service.get_freshness(countries=["MEX"], indicators=[_GDP])
+
+    assert response.data.items[0].stale is False
+
+
+async def test_an_old_aware_check_is_stale(mock_session: AsyncMock) -> None:
+    aware = datetime.now(UTC) - timedelta(days=31)
+    service = _service(mock_session, checks={("MEX", _GDP): aware})
+
+    response = await service.get_freshness(countries=["MEX"], indicators=[_GDP])
+
+    assert response.data.items[0].stale is True
