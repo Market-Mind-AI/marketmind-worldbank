@@ -1,7 +1,6 @@
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.db.session import get_session
@@ -181,7 +180,7 @@ class TestCatalogSeedEndpoint:
             # 7 original + FP.CPI.TOTL.ZG (was live in the catalog but never
             # in this code-level list until 2026-07-08 — restored so a
             # fresh database's seed matches what was actually running) + 5
-            # Macro Demand Structure indicators (marketmind-core GDP=C+I+G+NX
+            # Macro Demand Structure indicators (marketmind-scoring GDP=C+I+G+NX
             # identity) — see SEED_INDICATORS.
             assert len(data["data"]["indicators"]) == 13
         finally:

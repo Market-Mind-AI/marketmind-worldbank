@@ -14,11 +14,7 @@ class CountriesRequest(BaseModel):
         examples=[1000],
     )
 
-    model_config = {
-        "json_schema_extra": {
-            "examples": [{"per_page": 1000}]
-        }
-    }
+    model_config = {"json_schema_extra": {"examples": [{"per_page": 1000}]}}
 
 
 class IndicatorMetadataRequest(BaseModel):
@@ -29,11 +25,7 @@ class IndicatorMetadataRequest(BaseModel):
         examples=["NY.GDP.PCAP.CD"],
     )
 
-    model_config = {
-        "json_schema_extra": {
-            "examples": [{"indicator_code": "NY.GDP.PCAP.CD"}]
-        }
-    }
+    model_config = {"json_schema_extra": {"examples": [{"indicator_code": "NY.GDP.PCAP.CD"}]}}
 
 
 class ObservationsRequest(BaseModel):
@@ -98,7 +90,9 @@ class IndicatorCatalogItem(BaseModel):
     indicator_name: str = Field(
         ..., min_length=1, description="Human-readable name", examples=["GDP per capita (current US$)"]
     )
-    description: str | None = Field(None, description="Extended description", examples=["GDP per capita in current USD"])
+    description: str | None = Field(
+        None, description="Extended description", examples=["GDP per capita in current USD"]
+    )
     category: str = Field(..., description="Indicator category", examples=["gdp_per_capita"])
     expected_unit: str | None = Field(None, description="Expected unit of measure", examples=["current_usd"])
     marketmind_dimension: str | None = Field(

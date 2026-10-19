@@ -1,8 +1,6 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-
-import pytest
 
 from app.repositories.freshness_repository import ObservationFacts
 from app.services.worldbank_service import WorldBankService
@@ -164,9 +162,7 @@ async def test_a_single_indicator_request_still_counts(mock_session: AsyncMock) 
 
     agora = utc_now()
     repo = FreshnessRepository(mock_session)
-    mock_session.execute = AsyncMock(
-        return_value=SimpleNamespace(all=lambda: [("BRA", "FP.CPI.TOTL.ZG", None, agora)])
-    )
+    mock_session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: [("BRA", "FP.CPI.TOTL.ZG", None, agora)]))
 
     assert await repo.last_checks(countries=["BRA"]) == {("BRA", "FP.CPI.TOTL.ZG"): agora}
 

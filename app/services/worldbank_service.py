@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.clients.worldbank_client import WorldBankClient
 from app.core.config import settings
 from app.core.logging import logger
-from app.domain.enums import IngestionStatus, WorldBankEndpoint
+from app.domain.enums import WorldBankEndpoint
 from app.repositories.freshness_repository import FreshnessRepository
 from app.repositories.ingestion_run_repository import IngestionRunRepository
 from app.repositories.raw_api_response_repository import RawApiResponseRepository
@@ -120,7 +120,7 @@ SEED_INDICATORS = [
         "expected_unit": "per_100_people",
         "marketmind_dimension": "digital_readiness",
     },
-    # Macro Demand Structure (added 2026-07-08, marketmind-core GDP=C+I+G+NX
+    # Macro Demand Structure (added 2026-07-08, marketmind-scoring GDP=C+I+G+NX
     # identity — see that repo's memory marketmind_mos_engine). All 4
     # confirmed live against the real World Bank API before being added.
     {
@@ -134,7 +134,7 @@ SEED_INDICATORS = [
     {
         "indicator_code": "NE.CON.GOVT.ZS",
         "indicator_name": "General government final consumption expenditure (% of GDP)",
-        "description": "Government spending share of GDP — context only in marketmind-core (no defensible "
+        "description": "Government spending share of GDP — context only in marketmind-scoring (no defensible "
         "mayor/menor direction for market opportunity, confirmed against live data).",
         "category": "government_expenditure",
         "expected_unit": "percentage",
@@ -609,9 +609,7 @@ class WorldBankService:
                 )
             )
 
-        return FreshnessResponse(
-            data=FreshnessData(as_of=now, stale_after_days=stale_after_days, items=items)
-        )
+        return FreshnessResponse(data=FreshnessData(as_of=now, stale_after_days=stale_after_days, items=items))
 
     async def get_catalog(self) -> CatalogResponse:
         indicators = await self._indicator_repo.get_all()
@@ -721,7 +719,7 @@ class WorldBankService:
             if run_failed:
                 # Every requested indicator failed (transient network error,
                 # genuinely absent data, etc.) — marking this "success" would
-                # make callers' coverage tracking (e.g. marketmind-core's
+                # make callers' coverage tracking (e.g. marketmind-scoring's
                 # coverage_index) believe the gap is durably filled with zero
                 # actual data, and never retry it. Found 2026-07-03 during a
                 # real bulk-collection run: a transient failure for one
@@ -779,9 +777,7 @@ class WorldBankService:
     async def get_request(self, request_id: uuid.UUID) -> Any:
         return await self._request_repo.get_by_id(request_id)
 
-    async def get_series(
-        self, *, country_iso2: str, indicator_code: str, limit: int | None = None
-    ) -> SeriesResponse:
+    async def get_series(self, *, country_iso2: str, indicator_code: str, limit: int | None = None) -> SeriesResponse:
         """One indicator's stored values for one country, newest year first.
 
         This is how a caller reads what was collected without opening this
@@ -803,9 +799,7 @@ class WorldBankService:
             data=SeriesData(
                 country_iso2=country_iso2.strip().upper(),
                 indicator_code=indicator_code.strip(),
-                points=[
-                    SeriesPoint(year=r.year, value=r.value, unit=r.unit, obs_status=r.obs_status) for r in rows
-                ],
+                points=[SeriesPoint(year=r.year, value=r.value, unit=r.unit, obs_status=r.obs_status) for r in rows],
             )
         )
 

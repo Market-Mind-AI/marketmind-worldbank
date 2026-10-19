@@ -1,8 +1,7 @@
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.ingestion_run_repository import IngestionRunRepository
 from app.repositories.worldbank_request_repository import WorldBankRequestRepository

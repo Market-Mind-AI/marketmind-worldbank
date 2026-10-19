@@ -43,13 +43,3 @@ class WorldBankParsingError(WorldBankBaseException):
 class ValidationError(WorldBankBaseException):
     def __init__(self, message: str = "Validation error"):
         super().__init__(message=message, status_code=422)
-
-
-class IngestionError(WorldBankBaseException):
-    def __init__(self, message: str = "Ingestion error"):
-        super().__init__(message=message, status_code=500)
-
-
-class DatabaseError(WorldBankBaseException):
-    def __init__(self, message: str = "Database error"):
-        super().__init__(message=message, status_code=500)

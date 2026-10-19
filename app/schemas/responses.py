@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class RequestInfo(BaseModel):
@@ -164,10 +164,6 @@ class WorldBankRequestResponse(BaseModel):
     end_year: int | None = None
     query_params: dict | None = None
     created_at: datetime
-
-
-class ErrorResponse(BaseModel):
-    detail: str = Field(..., description="Error description")
 
 
 class FreshnessItem(BaseModel):
