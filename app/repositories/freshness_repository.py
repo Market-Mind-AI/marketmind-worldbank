@@ -4,10 +4,18 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.ingestion_run import IngestionRun
 from app.db.models.worldbank_observation import WorldBankObservation
 from app.db.models.worldbank_request import WorldBankRequest
 
 Pair = tuple[str, str]
+
+# A check is a collection that FINISHED. A request whose run failed asked and
+# got nothing back -- the source was down -- and counting it as a check made a
+# 50-minute UN Data outage (22/10/2026) report twenty pairs as fresh for the
+# whole window, with their last real data a month old. A run still in flight is
+# not a check yet either.
+CHECKED_STATUSES = ("success", "partial")
 
 
 @dataclass(frozen=True)
@@ -40,12 +48,17 @@ class FreshnessRepository:
         # lista em `query_params`. Exigir a coluna preenchida descartava a
         # segunda forma — que é a única que as coletas diárias produzem — e todo
         # par voltava como "nunca verificado", recoletado todas as noites.
-        stmt = select(
-            WorldBankRequest.country,
-            WorldBankRequest.indicator_code,
-            WorldBankRequest.query_params,
-            WorldBankRequest.created_at,
-        ).where(WorldBankRequest.country.is_not(None))
+        stmt = (
+            select(
+                WorldBankRequest.country,
+                WorldBankRequest.indicator_code,
+                WorldBankRequest.query_params,
+                WorldBankRequest.created_at,
+            )
+            .join(IngestionRun, IngestionRun.id == WorldBankRequest.ingestion_run_id)
+            .where(IngestionRun.status.in_(CHECKED_STATUSES))
+            .where(WorldBankRequest.country.is_not(None))
+        )
         if countries:
             stmt = stmt.where(WorldBankRequest.country.in_(countries))
 
