@@ -1,7 +1,7 @@
+import asyncio
 from typing import Any
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.core.exceptions import (
@@ -14,24 +14,14 @@ from app.core.exceptions import (
 )
 from app.core.logging import logger
 from app.utils.pagination import get_total_pages, parse_worldbank_response
-
-# Retry transient upstream failures — timeouts, 429, and 5xx (the World Bank
-# public API returns intermittent 502/503/504 under load; without retry a
-# single blip permanently drops an indicator and, downstream, aborts a whole
-# MarketMind analysis via its completeness gate). Non-transient errors (4xx,
-# parse) are NOT retried.
-RETRY_DECORATOR = retry(
-    stop=stop_after_attempt(settings.default_retries),
-    wait=wait_exponential(multiplier=settings.default_backoff, min=2, max=60),
-    retry=retry_if_exception_type((WorldBankTimeoutError, WorldBankRateLimitError, WorldBankTransientError)),
-    reraise=True,
-)
+from app.utils.retry import backoff_seconds, is_retryable_status
 
 
 class WorldBankClient:
     def __init__(self) -> None:
         self._base_url = settings.worldbank_base_url
         self._timeout = settings.default_timeout
+        self._retries = settings.default_retries
         self._format = settings.default_format
         self._per_page = settings.default_per_page
 
@@ -44,36 +34,52 @@ class WorldBankClient:
             params.update(extra_params)
         return params
 
-    @RETRY_DECORATOR
     async def get_raw(self, url: str, params: dict[str, Any] | None = None) -> tuple[Any, str]:
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.get(url, params=params)
+        """Uma chamada à API, insistindo enquanto a falha for passageira.
 
-                if response.status_code == 429:
-                    raise WorldBankRateLimitError(f"Rate limited: {response.status_code}")
-                if response.status_code >= 500:
-                    raise WorldBankTransientError(f"Server error {response.status_code}: {url}")
+        Quando e quanto insistir é a política comum aos quatro coletores, em
+        app/utils/retry.py. Esgotadas as tentativas, a falha passageira sobe como
+        WorldBankTransientError (503). Um 404 é a fonte dizendo que não tem o
+        dado e sobe como WorldBankEmptyResponseError, sem repetir; os outros 4xx
+        sobem como WorldBankClientError, também sem repetir.
+        """
+        last_error: WorldBankTransientError | None = None
+        for attempt in range(1, self._retries + 1):
+            retry_after: str | None = None
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    response = await client.get(url, params=params)
+            except httpx.TimeoutException:
+                last_error = WorldBankTimeoutError(f"Timeout calling World Bank API: {url}")
+            except httpx.HTTPError as e:
+                # Rede: DNS, conexão recusada ou derrubada. É a fonte (ou o
+                # caminho até ela) fora do ar, e esperar resolve.
+                last_error = WorldBankTransientError(f"Network error calling World Bank API: {e}")
+            else:
+                status = response.status_code
+                if is_retryable_status(status):
+                    retry_after = response.headers.get("Retry-After")
+                    if status == 429:
+                        last_error = WorldBankRateLimitError(f"Rate limited: {status}")
+                    else:
+                        last_error = WorldBankTransientError(f"Server error {status}: {url}")
+                elif status == 404:
+                    raise WorldBankEmptyResponseError(f"No data at {url}")
+                elif status >= 400:
+                    raise WorldBankClientError(f"HTTP error {status}: {url}")
+                else:
+                    try:
+                        data = response.json()
+                    except Exception as e:
+                        raise WorldBankParsingError(f"Failed to parse JSON response: {e}") from e
+                    _raise_if_rejected(data, url)
+                    return data, str(response.url)
 
-                response.raise_for_status()
+            logger.warning(f"World Bank attempt {attempt}/{self._retries} failed: {last_error}")
+            if attempt < self._retries:
+                await asyncio.sleep(backoff_seconds(attempt, retry_after))
 
-                try:
-                    data = response.json()
-                except Exception as e:
-                    raise WorldBankParsingError(f"Failed to parse JSON response: {e}") from e
-
-                return data, str(response.url)
-
-        except httpx.TimeoutException as e:
-            raise WorldBankTimeoutError(f"Timeout calling World Bank API: {url}") from e
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                raise WorldBankRateLimitError(f"Rate limited: {e.response.status_code}") from e
-            raise WorldBankClientError(f"HTTP error {e.response.status_code}: {url}") from e
-        except (WorldBankTimeoutError, WorldBankRateLimitError, WorldBankTransientError, WorldBankParsingError):
-            raise
-        except httpx.HTTPError as e:
-            raise WorldBankClientError(f"HTTP error calling World Bank API: {e}") from e
+        raise last_error or WorldBankTransientError(f"Failed after {self._retries} attempts: {url}")
 
     async def _fetch_all_pages(
         self, url: str, params: dict[str, Any]
@@ -145,3 +151,13 @@ class WorldBankClient:
         data, raw_responses, final_url = await self._fetch_all_pages(url, params)
 
         return data, raw_responses, final_url
+
+
+def _raise_if_rejected(data: Any, url: str) -> None:
+    """A API do World Bank recusa um pedido com 200 e uma mensagem no lugar dos
+    dados -- código de indicador ou de país que ela não conhece. Sem esta
+    checagem a recusa parecia "a fonte não tem dado", que conta como
+    verificação: um código errado ficaria "fresco" por 90 dias sem nunca ter
+    sido respondido. Recusa é erro do pedido, não ausência de dado."""
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict) and "message" in data[0]:
+        raise WorldBankClientError(f"World Bank rejected the request {url}: {data[0]['message']}")

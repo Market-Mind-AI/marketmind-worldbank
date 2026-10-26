@@ -25,11 +25,12 @@ class Settings(BaseSettings):
     worldbank_base_url: str = "https://api.worldbank.org/v2"
     default_format: str = "json"
     default_per_page: int = 1000
-    default_timeout: int = 30
-    # 5 attempts (was 3): the World Bank public API returns intermittent
-    # 5xx/timeouts under load, and one dropped indicator aborts a whole
-    # downstream MarketMind analysis (completeness gate) — more retries with
-    # exponential backoff ride out transient blips.
+    # Os três números abaixo são os mesmos nos coletores que falam HTTP (World
+    # Bank, OCDE, UN Data); tentativas e espera valem também para o Google Ads.
+    # 60s era o valor do UN Data, o maior dos três; ficou o de todos, porque
+    # encurtar só troca uma resposta lenta por uma tentativa a mais. Quando e
+    # quanto esperar entre tentativas está em app/utils/retry.py.
+    default_timeout: int = 60
     default_retries: int = 5
     default_backoff: int = 2
 

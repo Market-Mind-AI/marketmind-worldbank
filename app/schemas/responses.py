@@ -131,6 +131,9 @@ class CatalogCreateResponse(BaseModel):
 
 class CollectData(BaseModel):
     indicators_collected: int
+    # Os indicadores que não tiveram resposta da fonte nesta coleta. Não contam
+    # como verificados, e numa manutenção fazem o país contar como falha.
+    indicators_failed: list[str] = []
     total_observations: int
     observations: list[ObservationItem]
 

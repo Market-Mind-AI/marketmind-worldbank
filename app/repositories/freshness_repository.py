@@ -15,7 +15,10 @@ Pair = tuple[str, str]
 # 50-minute UN Data outage (22/10/2026) report twenty pairs as fresh for the
 # whole window, with their last real data a month old. A run still in flight is
 # not a check yet either.
-CHECKED_STATUSES = ("success", "partial")
+#
+# Só "success". Existia também "partial", que nenhum coletor jamais gravou e que
+# o Core lê como FALHA -- o mesmo nome com dois sentidos. Saiu dos três.
+CHECKED_STATUSES = ("success",)
 
 
 @dataclass(frozen=True)
@@ -42,37 +45,27 @@ class FreshnessRepository:
     async def last_checks(
         self, *, countries: list[str] | None = None, indicators: list[str] | None = None
     ) -> dict[Pair, datetime]:
-        # Duas formas de linha, porque há duas formas de requisição. Uma chamada
-        # de metadados nomeia UM indicador e preenche `indicator_code`; a coleta
-        # de séries busca VÁRIOS de uma vez e deixa a coluna nula, guardando a
-        # lista em `query_params`. Exigir a coluna preenchida descartava a
-        # segunda forma — que é a única que as coletas diárias produzem — e todo
-        # par voltava como "nunca verificado", recoletado todas as noites.
+        # Uma linha de requisição POR INDICADOR que a fonte respondeu -- com
+        # dado ou com um "não tenho" definitivo. É a mesma regra nos três
+        # coletores. Até 26/10/2026 a coleta gravava uma linha só, com a lista
+        # de TODOS os códigos pedidos, e marcava a execução como sucesso se
+        # qualquer um viesse: um código que falhou contava como verificado e
+        # ficava "fresco" por 90 dias sem nunca ter sido respondido.
         stmt = (
-            select(
-                WorldBankRequest.country,
-                WorldBankRequest.indicator_code,
-                WorldBankRequest.query_params,
-                WorldBankRequest.created_at,
-            )
+            select(WorldBankRequest.country, WorldBankRequest.indicator_code, func.max(WorldBankRequest.created_at))
             .join(IngestionRun, IngestionRun.id == WorldBankRequest.ingestion_run_id)
             .where(IngestionRun.status.in_(CHECKED_STATUSES))
             .where(WorldBankRequest.country.is_not(None))
+            .where(WorldBankRequest.indicator_code.is_not(None))
+            .group_by(WorldBankRequest.country, WorldBankRequest.indicator_code)
         )
         if countries:
             stmt = stmt.where(WorldBankRequest.country.in_(countries))
+        if indicators:
+            stmt = stmt.where(WorldBankRequest.indicator_code.in_(indicators))
 
-        procurados = set(indicators or [])
-        ultimos: dict[Pair, datetime] = {}
-        for country, indicator_code, params, created_at in (await self._session.execute(stmt)).all():
-            codigos = [indicator_code] if indicator_code else list((params or {}).get("indicator_codes") or [])
-            for code in codigos:
-                if procurados and code not in procurados:
-                    continue
-                chave = (country, code)
-                if chave not in ultimos or created_at > ultimos[chave]:
-                    ultimos[chave] = created_at
-        return ultimos
+        result = await self._session.execute(stmt)
+        return {(row[0], row[1]): row[2] for row in result.all()}
 
     async def observation_facts(
         self, *, countries: list[str] | None = None, indicators: list[str] | None = None

@@ -36,4 +36,5 @@ class WorldBankObservation(Base):
         Index("ix_worldbank_observations_country_iso2", "country_iso2"),
         Index("ix_worldbank_observations_indicator_code", "indicator_code"),
         Index("ix_worldbank_observations_year", "year"),
+        Index("ix_worldbank_observations_series", "country_iso2", "indicator_code", "year"),
     )

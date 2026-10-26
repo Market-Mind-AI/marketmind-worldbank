@@ -6,6 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.worldbank_client import WorldBankClient
 from app.core.config import settings
+from app.core.exceptions import (
+    IndicatorNotConfiguredError,
+    WorldBankBaseException,
+    WorldBankClientError,
+    WorldBankEmptyResponseError,
+    WorldBankTransientError,
+)
 from app.core.logging import logger
 from app.domain.enums import WorldBankEndpoint
 from app.repositories.freshness_repository import FreshnessRepository
@@ -53,7 +60,7 @@ from app.schemas.responses import (
     RequestInfo,
 )
 from app.utils.normalization import normalize_countries, normalize_country_observations, normalize_indicator_metadata
-from app.utils.time import as_naive_utc, elapsed_ms, utc_now
+from app.utils.time import elapsed_ms, utc_now
 
 SEED_INDICATORS = [
     {
@@ -336,8 +343,6 @@ class WorldBankService:
             normalized = normalize_indicator_metadata(data)
 
             if not normalized:
-                from app.core.exceptions import WorldBankEmptyResponseError
-
                 raise WorldBankEmptyResponseError(f"No metadata found for indicator: {request.indicator_code}")
 
             indicator = normalized[0]
@@ -400,7 +405,7 @@ class WorldBankService:
 
             normalized = normalize_country_observations(data)
 
-            entities = await self._observation_repo.bulk_create(
+            entities = await self._observation_repo.replace_periods(
                 worldbank_request_id=wb_request.id,
                 observations=normalized,
             )
@@ -559,7 +564,7 @@ class WorldBankService:
         *,
         countries: list[str] | None = None,
         indicators: list[str] | None = None,
-        stale_after_days: int = 30,
+        stale_after_days: int = 90,
         only_stale: bool = False,
     ) -> FreshnessResponse:
         """What this service holds and when it last looked, per country and indicator.
@@ -590,9 +595,7 @@ class WorldBankService:
 
         items: list[FreshnessItem] = []
         for country, indicator in pairs:
-            # Normalizado antes de comparar: `utc_now()` é sem fuso e a coluna
-            # de origem é `timestamp with time zone` — ver as_naive_utc.
-            last_checked_at = as_naive_utc(checks.get((country, indicator)))
+            last_checked_at = checks.get((country, indicator))
             facts = observed.get((country, indicator))
             stale = last_checked_at is None or last_checked_at < cutoff
             if only_stale and not stale:
@@ -634,8 +637,56 @@ class WorldBankService:
             )
         )
 
+    async def _configured_indicators(self, codes: list[str] | None) -> list[Any]:
+        """Os indicadores do catálogo que este pedido nomeia -- ou recusa o pedido.
+
+        Um código que o catálogo não conhece é erro de quem pediu, e recusar
+        o pedido inteiro com 422 é a mesma regra nos três coletores de
+        indicadores. Até 26/10/2026 o World Bank descartava o código em silêncio
+        e coletava o resto, e um catálogo vazio era um 404 -- o mesmo caso
+        respondido com 400 pela OCDE e com 422 pelo UN Data.
+        """
+        if codes:
+            indicators = await self._indicator_repo.get_by_codes(codes)
+            known = {indicator.indicator_code for indicator in indicators}
+            missing = [code for code in codes if code not in known]
+            if missing:
+                raise IndicatorNotConfiguredError(
+                    f"Indicators not configured in catalog: {', '.join(missing)}. "
+                    "Register them with POST /indicators/catalog first."
+                )
+            return indicators
+        indicators = await self._indicator_repo.get_active()
+        if not indicators:
+            raise IndicatorNotConfiguredError(
+                "No active indicators found in catalog. Seed the catalog first with POST /indicators/catalog/seed"
+            )
+        return indicators
+
+    @staticmethod
+    def _collect_failure(failures: dict[str, Exception]) -> WorldBankBaseException:
+        """O erro de uma coleta em que NENHUM indicador teve resposta da fonte.
+
+        Uma coleta que não trouxe nada levanta erro -- nunca um 200 com a
+        execução marcada como falha por dentro. Era assim até 26/10/2026, e a
+        manutenção diária contava uma queda da fonte como país renovado, com o
+        CronJob verde. A regra é a mesma nos três coletores de indicadores:
+
+        - toda falha foi passageira (5xx, 429, timeout, rede): a fonte está
+          fora, e o erro é 503 -- "tente de novo", que é o que vale fazer;
+        - alguma falha foi uma resposta definitiva que não serve: 502.
+
+        4xx fica só para erro de quem pediu, que é recusado antes de coletar
+        (`_configured_indicators`).
+        """
+        detail = "; ".join(f"{code}: {error}" for code, error in failures.items())
+        if all(isinstance(error, WorldBankTransientError) for error in failures.values()):
+            return WorldBankTransientError(f"World Bank unavailable: {detail}")
+        return WorldBankClientError(f"No indicator could be collected: {detail}")
+
     async def collect_indicators(self, request: IndicatorCollectRequest) -> CollectResponse:
         endpoint = WorldBankEndpoint.INDICATORS_COLLECT
+        indicators = await self._configured_indicators(request.indicator_codes)
         start = utc_now()
 
         run = await self._ingestion_repo.create(source="worldbank", request_payload=request.model_dump())
@@ -647,91 +698,74 @@ class WorldBankService:
             country=request.country,
             start_year=request.start_year,
             end_year=request.end_year,
-            # QUAIS indicadores esta chamada cobriu. Uma requisição ao World Bank
-            # busca vários de uma vez, então `indicator_code` fica nulo — e o
-            # cálculo de frescor, que casa por (país, indicador), não enxergava
-            # NENHUMA destas linhas. O efeito: todo indicador de todo país ficava
-            # eternamente "nunca verificado", e era recoletado toda noite.
             query_params={"indicator_codes": list(request.indicator_codes or [])},
         )
 
         try:
-            if request.indicator_codes:
-                indicators = await self._indicator_repo.get_by_codes(request.indicator_codes)
-            else:
-                indicators = await self._indicator_repo.get_active()
-
-            if not indicators:
-                from app.core.exceptions import WorldBankEmptyResponseError
-
-                raise WorldBankEmptyResponseError(
-                    "No active indicators found in catalog. Seed the catalog first with POST /indicators/catalog/seed"
-                )
-
             all_observations: list[dict[str, Any]] = []
-            indicators_collected = 0
-            failed_indicators: list[str] = []
+            answered: list[str] = []
+            failures: dict[str, Exception] = {}
 
             for indicator in indicators:
+                code = indicator.indicator_code
+                url = f"{settings.worldbank_base_url}/country/{request.country}/indicator/{code}"
                 try:
-                    data, raw_responses, final_url = await self._client.get_observations(
+                    data, raw_responses, url = await self._client.get_observations(
                         country=request.country,
-                        indicator_code=indicator.indicator_code,
+                        indicator_code=code,
                         start_year=request.start_year,
                         end_year=request.end_year,
                     )
-
-                    await self._raw_response_repo.bulk_create(
-                        worldbank_request_id=wb_request.id,
-                        endpoint=endpoint,
-                        request_payload={
-                            "country": request.country,
-                            "indicator_code": indicator.indicator_code,
-                            "start_year": request.start_year,
-                            "end_year": request.end_year,
-                        },
-                        raw_responses=raw_responses,
-                    )
-
-                    normalized = normalize_country_observations(data)
-                    all_observations.extend(normalized)
-                    indicators_collected += 1
-
-                    logger.info(
-                        f"Collected indicator={indicator.indicator_code} | country={request.country} "
-                        f"| records={len(normalized)}"
-                    )
-
+                except WorldBankEmptyResponseError:
+                    # A fonte respondeu que não tem: é resposta, conta como
+                    # verificação, e não é falha.
+                    data, raw_responses = [], []
                 except Exception as indicator_error:
-                    failed_indicators.append(indicator.indicator_code)
+                    failures[code] = indicator_error
                     logger.warning(
-                        f"Failed to collect indicator={indicator.indicator_code} | "
-                        f"country={request.country} | error={indicator_error}"
+                        f"Failed to collect indicator={code} | country={request.country} | error={indicator_error}"
                     )
+                    continue
 
-            entities = await self._observation_repo.bulk_create(
-                worldbank_request_id=wb_request.id,
-                observations=all_observations,
-            )
+                # A verificação: uma linha por indicador que a fonte respondeu.
+                # Um código que falhou não ganha linha, e por isso não conta
+                # como verificado (ver FreshnessRepository.last_checks).
+                check = await self._request_repo.create(
+                    ingestion_run_id=run.id,
+                    endpoint=endpoint,
+                    url=url,
+                    country=request.country,
+                    indicator_code=code,
+                    start_year=request.start_year,
+                    end_year=request.end_year,
+                )
+                await self._raw_response_repo.bulk_create(
+                    worldbank_request_id=check.id,
+                    endpoint=endpoint,
+                    request_payload={
+                        "country": request.country,
+                        "indicator_code": code,
+                        "start_year": request.start_year,
+                        "end_year": request.end_year,
+                    },
+                    raw_responses=raw_responses,
+                )
+                normalized = normalize_country_observations(data)
+                await self._observation_repo.replace_periods(worldbank_request_id=check.id, observations=normalized)
+                all_observations.extend(normalized)
+                answered.append(code)
+
+                logger.info(f"Collected indicator={code} | country={request.country} | records={len(normalized)}")
+
+            if not answered:
+                raise self._collect_failure(failures)
 
             exec_time = elapsed_ms(start)
-            run_failed = bool(failed_indicators) and indicators_collected == 0
-            if run_failed:
-                # Every requested indicator failed (transient network error,
-                # genuinely absent data, etc.) — marking this "success" would
-                # make callers' coverage tracking (e.g. marketmind-scoring's
-                # coverage_index) believe the gap is durably filled with zero
-                # actual data, and never retry it. Found 2026-07-03 during a
-                # real bulk-collection run: a transient failure for one
-                # country/indicator silently looked identical to success.
-                await self._ingestion_repo.mark_failed(
-                    run, exec_time, f"All indicators failed: {', '.join(failed_indicators)}"
-                )
-            else:
-                await self._ingestion_repo.mark_success(run, exec_time)
+            await self._ingestion_repo.mark_success(run, exec_time)
             await self._session.commit()
 
-            self._log_success(endpoint, run.id, wb_request.id, exec_time, len(entities), country=request.country)
+            stored = [obs for obs in all_observations if obs.get("year") is not None]
+            self._log_success(endpoint, run.id, wb_request.id, exec_time, len(stored), country=request.country)
 
             return CollectResponse(
                 request=self._request_info(
@@ -740,17 +774,11 @@ class WorldBankService:
                     start_year=request.start_year,
                     end_year=request.end_year,
                 ),
-                metadata=self._metadata(
-                    endpoint,
-                    exec_time,
-                    len(entities),
-                    run.id,
-                    wb_request.id,
-                    status="failed" if run_failed else "success",
-                ),  # fmt: skip
+                metadata=self._metadata(endpoint, exec_time, len(stored), run.id, wb_request.id),
                 data=CollectData(
-                    indicators_collected=indicators_collected,
-                    total_observations=len(entities),
+                    indicators_collected=len(answered),
+                    indicators_failed=list(failures),
+                    total_observations=len(stored),
                     observations=[
                         ObservationItem(
                             country=obs["country"],
@@ -761,8 +789,7 @@ class WorldBankService:
                             year=obs["year"],
                             value=obs.get("value"),
                         )
-                        for obs in all_observations
-                        if obs.get("year") is not None
+                        for obs in stored
                     ],
                 ),
             )
@@ -817,10 +844,16 @@ class WorldBankService:
         otherwise find every country stale at once and try to collect all of
         them in one pass, against an upstream API with its own patience.
 
-        Each country is REPLAYED from its last successful request, with the
-        window moved to now. Composing a fresh request instead would mean
-        knowing things this service has no business keeping -- which upstream
-        identifier a country has, which indicators it was set up with.
+        Each country is REPLAYED from what its successful collections asked
+        for -- every indicator, gathered across runs -- with the window moved to
+        now. Composing a fresh request instead would mean knowing things this
+        service has no business keeping -- which upstream identifier a country
+        has, which indicators it was set up with.
+
+        Um país só conta como renovado quando TODOS os seus indicadores tiveram
+        resposta. Se algum falhou, o país conta como falha, com os códigos no
+        detalhe -- é o que faz `fail_if_incomplete` acusar uma queda parcial da
+        fonte em vez de deixá-la passar como noite boa. Mesma regra nos três.
         """
         freshness = await self.get_freshness(stale_after_days=request.stale_after_days, only_stale=True)
 
@@ -829,16 +862,18 @@ class WorldBankService:
             if item.country not in stale_countries:
                 stale_countries.append(item.country)
 
-        payloads = await self._ingestion_repo.last_successful_payload_by_country()
+        setups = await self._ingestion_repo.last_collect_setup_by_country()
         end_year = utc_now().year
-        start_year = end_year - request.years_back + 1
+        # A mesma janela que o Core pede: de `years_back` anos atrás até este
+        # ano, inclusive (macro_coverage, `_ANNUAL_LOOKBACK_YEARS`).
+        start_year = end_year - request.years_back
 
         outcomes: list[RefreshedCountry] = []
         refreshed = failed = skipped = 0
 
         for country in stale_countries[: request.limit]:
-            payload = payloads.get(country)
-            if payload is None:
+            setup = setups.get(country)
+            if setup is None:
                 skipped += 1
                 outcomes.append(
                     RefreshedCountry(
@@ -850,20 +885,34 @@ class WorldBankService:
                 continue
 
             try:
-                await self.collect_indicators(
+                response = await self.collect_indicators(
                     IndicatorCollectRequest(
-                        country=payload.get("country", country),
+                        country=setup.get("country", country),
                         start_year=start_year,
                         end_year=end_year,
-                        indicator_codes=payload.get("indicator_codes"),
+                        indicator_codes=setup["indicator_codes"] or None,
                     )
                 )
-                refreshed += 1
-                outcomes.append(RefreshedCountry(country=country, outcome="refreshed"))
             except Exception as exc:  # noqa: BLE001 - one country failing must not end the pass
                 failed += 1
                 logger.warning(f"Scheduled refresh failed for country={country}: {exc}")
                 outcomes.append(RefreshedCountry(country=country, outcome="failed", detail=str(exc)))
+                continue
+
+            not_collected = response.data.indicators_failed
+            if not_collected:
+                failed += 1
+                logger.warning(f"Scheduled refresh incomplete for country={country}: {not_collected}")
+                outcomes.append(
+                    RefreshedCountry(
+                        country=country,
+                        outcome="failed",
+                        detail=f"indicators not collected: {', '.join(not_collected)}",
+                    )
+                )
+            else:
+                refreshed += 1
+                outcomes.append(RefreshedCountry(country=country, outcome="refreshed"))
 
         return RefreshStaleResponse(
             data=RefreshStaleData(

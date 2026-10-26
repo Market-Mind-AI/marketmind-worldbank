@@ -177,8 +177,11 @@ class RefreshStaleRequest(BaseModel):
     """Body of the daily maintenance pass. Every field has a default so the
     scheduled call can send `{}`."""
 
+    # 90 dias: a janela que o Core usa para indicador de país
+    # (`country_indicator_ttl_days`), e o mesmo padrão nos três coletores. O
+    # padrão antigo, 30, renovava todo mês número que sai uma vez por ano.
     stale_after_days: int = Field(
-        default=30,
+        default=90,
         ge=1,
         le=3650,
         description="A country whose last check is older than this gets collected again.",
@@ -197,9 +200,13 @@ class RefreshStaleRequest(BaseModel):
         default=False,
         description="Answer 503 when any country failed, so a caller that retries on error can retry.",
     )
+    # 10 anos, contados para trás a partir deste ano e incluindo-o: a mesma
+    # janela que o Core pede numa coleta sob demanda (`_ANNUAL_LOOKBACK_YEARS`
+    # em marketmind-scoring). Com 5, a renovação noturna buscava uma série mais
+    # curta que a da primeira coleta.
     years_back: int = Field(
-        default=5,
+        default=10,
         ge=1,
         le=70,
-        description="How far back the replayed window reaches, counting from this year.",
+        description="How far back the replayed window reaches: from this year minus years_back to this year.",
     )

@@ -3,13 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.dependencies import get_worldbank_service
-from app.core.exceptions import (
-    WorldBankBaseException,
-    WorldBankClientError,
-    WorldBankEmptyResponseError,
-    WorldBankRateLimitError,
-    WorldBankTimeoutError,
-)
+from app.core.exceptions import WorldBankBaseException
 from app.schemas.requests import (
     CountriesRequest,
     IndicatorCatalogRequest,
@@ -60,14 +54,16 @@ def _refuse_if_incomplete(resposta, pedido) -> None:
 
 
 def _handle_exception(e: Exception) -> HTTPException:
-    if isinstance(e, WorldBankEmptyResponseError):
-        return HTTPException(status_code=404, detail=str(e))
-    if isinstance(e, WorldBankRateLimitError):
-        return HTTPException(status_code=429, detail=str(e))
-    if isinstance(e, WorldBankTimeoutError):
-        return HTTPException(status_code=504, detail=str(e))
-    if isinstance(e, WorldBankClientError):
-        return HTTPException(status_code=502, detail=str(e))
+    """O status HTTP de cada erro, num lugar só, e o mesmo nos três coletores:
+
+    - 422: indicador que o catálogo não conhece -- o único erro de quem pediu;
+    - 503: fonte fora do ar depois de todas as tentativas -- vale insistir;
+    - 404: a fonte não tem o dado pedido;
+    - 502: a fonte respondeu algo que não serve.
+
+    Cada exceção carrega o próprio status (app/core/exceptions.py); timeout e
+    429 esgotados são 503, como qualquer outra queda passageira.
+    """
     if isinstance(e, WorldBankBaseException):
         return HTTPException(status_code=e.status_code, detail=e.message)
     return HTTPException(status_code=500, detail=str(e))
@@ -171,8 +167,11 @@ async def create_catalog(
         "on-demand collection: something decides a country is needed now and "
         "asks for it. Between the two, what this service holds stays fresh "
         "without anyone tracking it from outside.\n\n"
-        "Each stale country is replayed from its last SUCCESSFUL collection "
-        "request, with the year window moved to now. Replaying rather than "
+        "Each stale country is replayed from its SUCCESSFUL collection requests "
+        "-- every indicator it was ever collected with, gathered across runs -- "
+        "with the year window moved to now (`years_back`, default 10, the window "
+        "the Core asks for). A country counts as refreshed only when every one "
+        "of its indicators got an answer from the source. Replaying rather than "
         "composing a new request means this service needs no knowledge it does "
         "not already have -- whatever a caller once set up keeps working.\n\n"
         "A country never collected is skipped, not invented: it has no request "
@@ -252,7 +251,7 @@ async def get_freshness(
     indicator: list[str] | None = Query(
         None, description="World Bank indicator codes, e.g. NY.GDP.MKTP.CD. Repeat for several."
     ),
-    stale_after_days: int = Query(30, ge=1, le=3650, description="A check older than this counts as stale."),
+    stale_after_days: int = Query(90, ge=1, le=3650, description="A check older than this counts as stale."),
     only_stale: bool = Query(False, description="Return only the pairs that need collecting."),
     service: WorldBankService = Depends(get_worldbank_service),
 ) -> FreshnessResponse:

@@ -33,11 +33,23 @@ async def test_a_recent_check_is_not_stale(mock_session: AsyncMock) -> None:
 
 
 async def test_an_old_check_is_stale(mock_session: AsyncMock) -> None:
-    service = _service(mock_session, checks={("ESP", _GDP): utc_now() - timedelta(days=31)})
+    service = _service(mock_session, checks={("ESP", _GDP): utc_now() - timedelta(days=91)})
 
     response = await service.get_freshness(countries=["ESP"], indicators=[_GDP])
 
     assert response.data.items[0].stale is True
+
+
+async def test_the_default_window_is_the_cores_ninety_days(mock_session: AsyncMock) -> None:
+    """Indicador de país sai uma vez por ano; o Core o considera bom por 90 dias
+    (`country_indicator_ttl_days`). Com o padrão antigo de 30, quem não passava
+    a janela renovava todo mês um número que não tinha mudado."""
+    service = _service(mock_session, checks={("ESP", _GDP): utc_now() - timedelta(days=60)})
+
+    response = await service.get_freshness(countries=["ESP"], indicators=[_GDP])
+
+    assert response.data.stale_after_days == 90
+    assert response.data.items[0].stale is False
 
 
 async def test_yearly_data_is_not_stale_just_because_the_value_is_old(mock_session: AsyncMock) -> None:
@@ -92,7 +104,7 @@ async def test_only_stale_filters_out_what_is_fresh(mock_session: AsyncMock) -> 
         mock_session,
         checks={
             ("ESP", _GDP): utc_now() - timedelta(days=1),
-            ("ESP", _POP): utc_now() - timedelta(days=90),
+            ("ESP", _POP): utc_now() - timedelta(days=91),
         },
     )
 
@@ -132,37 +144,27 @@ async def test_the_threshold_is_configurable(mock_session: AsyncMock) -> None:
     assert stale.data.stale_after_days == 7
 
 
-async def test_a_batch_collection_counts_as_checking_every_indicator_it_covered(
-    mock_session: AsyncMock,
-) -> None:
-    """Uma coleta de séries busca VÁRIOS indicadores numa chamada e deixa
-    `indicator_code` nulo, guardando a lista em `query_params`. Exigir a coluna
-    preenchida descartava exatamente essas linhas — que são as únicas que as
-    coletas diárias produzem — e todo par voltava como "nunca verificado".
-
-    O efeito medido em produção: doze indicadores do Brasil com sessenta
-    observações cada, todos com last_checked_at nulo, recoletados toda noite.
-    """
+async def test_a_request_row_without_an_indicator_is_not_a_check(mock_session: AsyncMock) -> None:
+    """A linha da coleta inteira guarda a lista de códigos PEDIDOS, não a dos
+    respondidos. Lê-la como verificação fazia um código que falhou contar como
+    verificado por 90 dias. A verificação é a linha por indicador, gravada só
+    quando a fonte respondeu."""
     from app.repositories.freshness_repository import FreshnessRepository
 
-    agora = utc_now()
-    linhas = [("BRA", None, {"indicator_codes": ["NY.GDP.PCAP.CD", "SP.POP.TOTL"]}, agora)]
+    mock_session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: []))
 
-    repo = FreshnessRepository(mock_session)
-    mock_session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: linhas))
+    await FreshnessRepository(mock_session).last_checks(countries=["BRA"])
 
-    checks = await repo.last_checks(countries=["BRA"])
-
-    assert checks == {("BRA", "NY.GDP.PCAP.CD"): agora, ("BRA", "SP.POP.TOTL"): agora}
+    sql = str(mock_session.execute.call_args.args[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "worldbank_requests.indicator_code IS NOT NULL" in sql
 
 
-async def test_a_single_indicator_request_still_counts(mock_session: AsyncMock) -> None:
-    """A outra forma de linha, das chamadas de metadados, continua valendo."""
+async def test_a_single_indicator_request_counts(mock_session: AsyncMock) -> None:
     from app.repositories.freshness_repository import FreshnessRepository
 
     agora = utc_now()
     repo = FreshnessRepository(mock_session)
-    mock_session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: [("BRA", "FP.CPI.TOTL.ZG", None, agora)]))
+    mock_session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: [("BRA", "FP.CPI.TOTL.ZG", agora)]))
 
     assert await repo.last_checks(countries=["BRA"]) == {("BRA", "FP.CPI.TOTL.ZG"): agora}
 

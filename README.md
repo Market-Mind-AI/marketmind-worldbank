@@ -50,7 +50,7 @@ app/
 | Language | Python 3.12 |
 | Framework | FastAPI |
 | Validation | Pydantic v2 |
-| HTTP Client | httpx (retries via tenacity) |
+| HTTP Client | httpx (retry policy in `app/utils/retry.py`) |
 | ORM | SQLAlchemy 2.0 (async, asyncpg) |
 | Migrations | Alembic |
 | Database | PostgreSQL 16 |
@@ -122,9 +122,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 | `WORLDBANK_BASE_URL` | https://api.worldbank.org/v2 | World Bank API base URL |
 | `DEFAULT_FORMAT` | json | Response format |
 | `DEFAULT_PER_PAGE` | 1000 | Records per page |
-| `DEFAULT_TIMEOUT` | 30 | HTTP timeout (seconds) |
-| `DEFAULT_RETRIES` | 5 | Retry attempts (`.env.example` and the deployed environment set 3) |
-| `DEFAULT_BACKOFF` | 2 | Exponential backoff multiplier (tenacity, min 2 s, max 60 s) |
+| `DEFAULT_TIMEOUT` | 60 | HTTP timeout (seconds), same in every collector |
+| `DEFAULT_RETRIES` | 5 | Attempts per call, same in every collector |
+| `DEFAULT_BACKOFF` | 2 | First wait (seconds); doubles per attempt, with jitter, capped at 60 s |
 | `LOG_LEVEL` | INFO | Log level |
 
 ## Endpoints
@@ -143,7 +143,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 | `POST` | `/indicators/collect` | Collect data for catalog indicators |
 | `GET` | `/observations/series` | Read one indicator's stored values for one country (`country_iso2`, `indicator_code`, optional `limit`) |
 | `GET` | `/freshness` | What is stored and when it was last checked (`country`, `indicator`, `stale_after_days`, `only_stale`) |
-| `POST` | `/maintenance/refresh-stale` | Collect again every country whose last check is older than `stale_after_days` (default 30); `limit`, `fail_if_incomplete` |
+| `POST` | `/maintenance/refresh-stale` | Collect again every country whose last check is older than `stale_after_days` (default 90); `limit`, `fail_if_incomplete`, `years_back` (default 10) |
 | `GET` | `/requests/{id}` | Get request details |
 | `GET` | `/runs/{id}` | Get ingestion run details |
 
@@ -227,11 +227,11 @@ curl "http://localhost:8003/observations/series?country_iso2=ES&indicator_code=N
 ### Check freshness and refresh what is stale
 
 ```bash
-curl "http://localhost:8003/freshness?country=ESP&stale_after_days=30&only_stale=true"
+curl "http://localhost:8003/freshness?country=ESP&stale_after_days=90&only_stale=true"
 
 curl -X POST http://localhost:8003/maintenance/refresh-stale \
   -H "Content-Type: application/json" \
-  -d '{"stale_after_days": 30, "fail_if_incomplete": true}'
+  -d '{"stale_after_days": 90, "fail_if_incomplete": true}'
 ```
 
 ## Default MarketMind Indicators
@@ -259,7 +259,7 @@ The 13 indicators seeded by `POST /indicators/catalog/seed` (`SEED_INDICATORS` i
 | Table | Purpose |
 |-------|---------|
 | `ingestion_runs` | Tracks each ingestion execution |
-| `worldbank_requests` | Each API call made to World Bank |
+| `worldbank_requests` | Each collection, plus one row per (country, indicator) the source answered -- the checks |
 | `raw_api_responses` | Raw JSON responses (JSONB) |
 | `worldbank_countries` | Normalized country data |
 | `worldbank_indicators_catalog` | Internal indicator registry |
@@ -303,12 +303,32 @@ mypy .
 
 ## World Bank API Limitations
 
-- **Rate limiting**: The World Bank API may throttle requests. The client retries timeouts, 429 and 5xx with exponential backoff (tenacity: `DEFAULT_RETRIES` attempts, multiplier `DEFAULT_BACKOFF`, wait between 2 s and 60 s). 4xx errors other than 429 are not retried.
+- **Rate limiting**: The World Bank API may throttle requests. See the collection rules below for how the client retries.
 - **Data availability**: Not all indicators have data for all countries or years. Null values are preserved.
 - **Response format**: The API returns a two-element array `[metadata, data]`. The client handles this defensively.
 - **Pagination**: Large result sets are paginated. The client automatically fetches all pages.
 - **Eventual consistency**: Data may be updated or revised by the World Bank at any time.
-- **Partial failures**: a `/indicators/collect` run is marked `failed` only when every requested indicator failed; otherwise it succeeds and lists the indicators that failed.
+- **Partial failures**: a `/indicators/collect` that got an answer for some indicators succeeds and lists the others in `indicators_failed`.
+
+## Collection rules (the same in every MarketMind collector)
+
+- **Retries** (`app/utils/retry.py`): 408, 429, any 5xx, timeouts and network errors are retried, up to
+  `DEFAULT_RETRIES` attempts, waiting `DEFAULT_BACKOFF` seconds doubled per attempt, with jitter, capped at
+  60 s; a `Retry-After` header is honoured up to the same cap. Other 4xx are never retried.
+- **HTTP status**: `422` when the request names an indicator the catalog does not have (the only caller
+  error); `503` when the source stayed down through every attempt; `502` when the source answered with
+  something unusable; `404` when it has no data (direct endpoints only).
+- **A collection that got nothing raises**: if no requested indicator got an answer, `/indicators/collect`
+  answers `503` (every failure transient) or `502`, and the run is `failed` -- never a `200` with a failed run.
+- **What counts as a check**: one `worldbank_requests` row per (country, indicator) that got an answer from
+  the source -- data, or a definitive "no data". Failed indicators are not checks. Run statuses are
+  `running`, `success` and `failed`; there is no `partial`.
+- **One value per period**: a new collection replaces the years it brings, and `/observations/series`
+  returns one row per year -- the latest collection's; within one collection, the largest value.
+- **Timestamps**: timezone-aware UTC everywhere (`app/utils/time.py`).
+- **Refresh**: each stale country is replayed with every indicator from all of its successful runs, over
+  the Core's window (`years_back` = 10: from ten years ago to this year); it counts as refreshed only when
+  every indicator got an answer.
 
 ## Rate Limit Best Practices
 
