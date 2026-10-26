@@ -54,10 +54,10 @@ from app.schemas.responses import (
     RefreshedCountry,
     RefreshStaleData,
     RefreshStaleResponse,
+    RequestInfo,
     SeriesData,
     SeriesPoint,
     SeriesResponse,
-    RequestInfo,
 )
 from app.utils.normalization import normalize_countries, normalize_country_observations, normalize_indicator_metadata
 from app.utils.time import elapsed_ms, utc_now
